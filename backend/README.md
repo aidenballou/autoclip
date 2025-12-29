@@ -25,6 +25,150 @@ backend/
 
 ## Video Processing Pipeline
 
+AutoClip supports two segmentation pipelines:
+
+| Pipeline | Description | Best For |
+|----------|-------------|----------|
+| **V2 (Default)** | Highlight-aware with quality scoring | Sports, esports, gaming, reaction videos |
+| **V1** | Scene-cut based segmentation | Quick splits, montage editing |
+
+Configure in `config.py` or via API: `segmentation_mode = "v1" | "v2"`
+
+---
+
+## V2 Pipeline: Highlight-Aware Segmentation
+
+The V2 pipeline uses multi-signal analysis to detect meaningful highlight moments and select natural clip boundaries.
+
+### Pipeline Stages
+
+```
+Video → Feature Extraction → Anchor Detection → Boundary Scoring 
+      → Window Selection → Post-Filtering → Clips
+```
+
+### 1. Feature Extraction
+
+Extracts time-series signals at fixed intervals (default: 0.5s):
+
+**Audio Loudness (Primary excitement signal)**
+```python
+# Extract mono audio → compute RMS per window
+audio_rms = sqrt(mean(samples^2))
+audio_rms_z = z_score(audio_rms)  # Normalized
+```
+
+**Motion Score (Visual excitement proxy)**
+```python
+# Decode at low FPS (4fps) + downscale (160px wide)
+motion_score = mean(abs(frame[t] - frame[t-1]))
+motion_score_z = z_score(motion_score)
+```
+
+**Scene Cuts (Transition candidates)**
+```bash
+ffmpeg -vf "select='gt(scene,0.3)',showinfo" ...
+```
+
+**Fade/Freeze Detection (Boundary candidates)**
+```bash
+ffmpeg -vf "blackdetect=d=0.1:pix_th=0.10" ...
+ffmpeg -vf "freezedetect=n=0.003:d=0.5" ...
+```
+
+### 2. Anchor Detection
+
+Identifies highlight moments using:
+- **Excitement peaks**: `loudness_z × motion_z` with non-max suppression
+- **Audio-only peaks**: High loudness even with low motion (commentary/reactions)
+- **Action sequences**: High motion + clustered scene cuts
+
+### 3. Boundary Scoring
+
+Scores each timepoint as a potential clip boundary:
+
+```python
+boundary_score = (
+    0.45 × scene_strength +      # Scene cut proximity
+    0.25 × audio_dip_strength +  # Quiet moment (transition)
+    0.15 × fade_strength +       # Fade/black transition
+    0.15 × motion_valley_strength
+) - spacing_penalty
+```
+
+### 4. Window Selection
+
+For each anchor, selects clip start/end by snapping to best boundaries:
+
+```
+Search ranges (relative to anchor):
+- Start: [anchor - 14s, anchor - 2s] → fallback: anchor - 8s
+- End: [anchor + 2s, anchor + 28s] → fallback: anchor + 12s
+```
+
+**Quality Score Computation:**
+```python
+quality = (
+    0.4 × excitement_integral +
+    0.2 × boundary_quality +
+    0.2 × narrative_score -      # Anchor not too close to edges
+    dead_time_penalty            # Penalize low-activity segments
+) × anchor_boost
+```
+
+### 5. Post-Filtering
+
+1. **Overlap Resolution**: IoU-based greedy selection (threshold: 0.35)
+2. **Boring Filter**: Drop clips with mostly low activity (unless high anchor score)
+3. **Deduplication**: Frame hash comparison for near-duplicates
+4. **Quality Cutoff**: Reduce to target count (default: 200) by quality
+
+### Debug Output
+
+V2 writes detailed debug artifacts to `projects/{id}/debug/`:
+
+**`segmentation_v2_debug.json`** contains:
+- Config used
+- Feature extraction summary
+- All detected anchors with scores
+- All boundary candidates with component scores
+- Candidate windows before filtering
+- Filter decisions (why clips were kept/dropped)
+- Final clip list with quality breakdowns
+
+**Reading Debug JSON:**
+```python
+import json
+with open("segmentation_v2_debug.json") as f:
+    debug = json.load(f)
+    
+# Top anchors
+for a in sorted(debug["anchors"], key=lambda x: x["score"], reverse=True)[:5]:
+    print(f"{a['time_sec']:.1f}s: score={a['score']:.2f}, reason={a['reason']}")
+
+# Why clips were dropped
+for d in debug["filter_report"]["overlap"]:
+    if d["action"] == "drop_overlap":
+        print(f"Dropped clip {d['clip_index']}: {d['reason']}")
+```
+
+### Tuning V2
+
+Key parameters in `pipeline/v2/config.py`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `step_sec` | 0.5 | Feature sampling interval |
+| `anchor_suppression_window_sec` | 4.0 | Min spacing between anchors |
+| `pre_max` / `post_max` | 14 / 28 | Max boundary search range |
+| `overlap_iou_threshold` | 0.35 | Overlap tolerance |
+| `target_clip_count_soft` | 200 | Soft cap on clip count |
+| `boundary_w_scene` | 0.45 | Scene cut weight in boundary score |
+
+---
+
+## V1 Pipeline: Scene-Based Segmentation
+
 ### Scene Detection
 
 Uses FFmpeg's `select` filter with scene detection:
@@ -142,6 +286,7 @@ Environment variables (or `.env` file):
 | `HOST` | `0.0.0.0` | Server host |
 | `PORT` | `8000` | Server port |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/autoclip.db` | Database URL |
+| `SEGMENTATION_MODE` | `v2` | `v1` (scene-based) or `v2` (highlight-aware) |
 | `SCENE_THRESHOLD` | `0.3` | Scene detection threshold |
 | `MIN_CLIP_SECONDS` | `5.0` | Minimum clip duration |
 | `MAX_CLIP_SECONDS` | `60.0` | Maximum clip duration |
@@ -152,6 +297,30 @@ Environment variables (or `.env` file):
 ```bash
 cd backend
 pytest tests/ -v
+
+# Run only V2 pipeline tests
+pytest tests/test_v2_pipeline.py -v
+```
+
+## CLI Test Harness
+
+Analyze a video with the V2 pipeline from the command line:
+
+```bash
+# Run V2 analysis
+python scripts/analyze_v2_cli.py video.mp4 --output-dir ./output
+
+# Compare V1 and V2
+python scripts/analyze_v2_cli.py video.mp4 --mode v1 -o ./v1_output
+python scripts/analyze_v2_cli.py video.mp4 --mode v2 -o ./v2_output
+
+# Output structure:
+# ./output/
+#   ├── v2_clips.json          # Final clips
+#   ├── features/
+#   │   └── features_v2.json   # Cached features
+#   └── debug/
+#       └── segmentation_v2_debug.json  # Full debug info
 ```
 
 ## Development

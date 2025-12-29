@@ -30,6 +30,7 @@ from app.api.schemas import (
     CompoundClipResponse,
     ExportClipRequest,
     ExportBatchRequest,
+    AnalyzeRequest,
     JobResponse,
     HealthResponse,
     DependencyCheckResponse,
@@ -218,11 +219,23 @@ async def start_download(project_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/projects/{project_id}/analyze", response_model=JobResponse)
-async def start_analysis(project_id: int, db: AsyncSession = Depends(get_db)):
-    """Start video analysis and clip generation."""
+async def start_analysis(
+    project_id: int,
+    segmentation_mode: Optional[str] = Query(
+        None,
+        description="Segmentation mode: 'v1' (scene-based) or 'v2' (highlight-aware)"
+    ),
+    db: AsyncSession = Depends(get_db)
+):
+    """Start video analysis and clip generation.
+    
+    Use segmentation_mode to override the default:
+    - v1: Scene-based segmentation (original algorithm)
+    - v2: Highlight-aware segmentation (improved algorithm with quality scores)
+    """
     service = ProjectService(db)
     try:
-        job = await service.start_analyze_job(project_id)
+        job = await service.start_analyze_job(project_id, segmentation_mode=segmentation_mode)
         return JobResponse.model_validate(job)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -575,6 +588,9 @@ def _clip_to_response(clip: Clip) -> ClipResponse:
         thumbnail_url=thumbnail_url,
         created_by=clip.created_by.value,
         ordering=clip.ordering,
+        quality_score=clip.quality_score,
+        anchor_time_sec=clip.anchor_time_sec,
+        generation_version=clip.generation_version,
         created_at=clip.created_at
     )
 

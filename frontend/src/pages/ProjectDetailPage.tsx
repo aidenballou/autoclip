@@ -14,6 +14,11 @@ import {
   Clock,
   Film,
   Settings,
+  ArrowUpDown,
+  Star,
+  ChevronDown,
+  Sparkles,
+  Zap,
 } from 'lucide-react'
 import {
   getProject,
@@ -32,8 +37,10 @@ import { JobProgress } from '../components/JobProgress'
 import { CompoundClipCreator } from '../components/CompoundClipCreator'
 import { useJobPolling } from '../hooks/useJobPolling'
 import { formatDuration, formatResolution, getStatusBgColor } from '../utils/format'
-import type { Clip } from '../types'
+import type { Clip, SegmentationMode } from '../types'
 import clsx from 'clsx'
+
+type SortMode = 'timeline' | 'quality'
 
 export function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -48,6 +55,8 @@ export function ProjectDetailPage() {
   const [showCompoundCreator, setShowCompoundCreator] = useState(false)
   const [previewStart, setPreviewStart] = useState(0)
   const [previewEnd, setPreviewEnd] = useState<number | undefined>(undefined)
+  const [sortMode, setSortMode] = useState<SortMode>('timeline')
+  const [showAnalyzeMenu, setShowAnalyzeMenu] = useState(false)
 
   // Queries
   const { data: project, isLoading: projectLoading, error: projectError } = useQuery({
@@ -85,8 +94,11 @@ export function ProjectDetailPage() {
   })
 
   const analyzeMutation = useMutation({
-    mutationFn: () => startAnalysis(id),
-    onSuccess: (job) => setActiveJobId(job.id),
+    mutationFn: (mode?: SegmentationMode) => startAnalysis(id, mode),
+    onSuccess: (job) => {
+      setActiveJobId(job.id)
+      setShowAnalyzeMenu(false)
+    },
   })
 
   // Handlers
@@ -120,6 +132,32 @@ export function ProjectDetailPage() {
   const selectedClipsList = useMemo(() => {
     return clips.filter(c => selectedClips.has(c.id))
   }, [clips, selectedClips])
+
+  // Sorted clips
+  const sortedClips = useMemo(() => {
+    if (sortMode === 'quality') {
+      // Sort by quality score descending, clips without scores go to the end
+      return [...clips].sort((a, b) => {
+        if (a.quality_score === null && b.quality_score === null) return a.ordering - b.ordering
+        if (a.quality_score === null) return 1
+        if (b.quality_score === null) return -1
+        return b.quality_score - a.quality_score
+      })
+    }
+    // Default: timeline (by ordering)
+    return [...clips].sort((a, b) => a.ordering - b.ordering)
+  }, [clips, sortMode])
+
+  // Check if clips have quality scores (v2 pipeline was used)
+  const hasQualityScores = useMemo(() => {
+    return clips.some(c => c.quality_score !== null)
+  }, [clips])
+
+  // Get generation version from first clip
+  const generationVersion = useMemo(() => {
+    const clip = clips.find(c => c.generation_version)
+    return clip?.generation_version || null
+  }, [clips])
 
   const videoUrl = project?.source_path ? getVideoUrl(id) : null
   const canAnalyze = project?.status === 'downloaded' || project?.status === 'ready'
@@ -203,14 +241,62 @@ export function ProjectDetailPage() {
                 </Button>
               )}
               {canAnalyze && (
-                <Button
-                  variant="primary"
-                  onClick={() => analyzeMutation.mutate()}
-                  loading={analyzeMutation.isPending || isProcessing}
-                  icon={<Scissors className="w-4 h-4" />}
-                >
-                  {project.status === 'ready' ? 'Re-analyze' : 'Analyze & Split'}
-                </Button>
+                <div className="relative">
+                  <div className="flex">
+                    <Button
+                      variant="primary"
+                      onClick={() => analyzeMutation.mutate()}
+                      loading={analyzeMutation.isPending || isProcessing}
+                      icon={<Scissors className="w-4 h-4" />}
+                      className="rounded-r-none"
+                    >
+                      {project.status === 'ready' ? 'Re-analyze' : 'Analyze & Split'}
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={() => setShowAnalyzeMenu(!showAnalyzeMenu)}
+                      loading={analyzeMutation.isPending || isProcessing}
+                      className="rounded-l-none border-l border-clip-accent/30 px-2"
+                    >
+                      <ChevronDown className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  
+                  {/* Analysis mode dropdown */}
+                  {showAnalyzeMenu && (
+                    <div className="absolute right-0 mt-2 w-64 bg-clip-surface border border-clip-border rounded-lg shadow-xl z-50">
+                      <div className="p-2 border-b border-clip-border">
+                        <p className="text-xs text-gray-500 uppercase tracking-wide">Pipeline Mode</p>
+                      </div>
+                      <div className="p-1">
+                        <button
+                          className="w-full flex items-start gap-3 p-3 text-left hover:bg-clip-elevated rounded-lg transition-colors"
+                          onClick={() => analyzeMutation.mutate('v2')}
+                        >
+                          <Sparkles className="w-5 h-5 text-clip-accent flex-shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-medium text-white">V2 Highlight-Aware</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              Smart detection with quality scores. Best for highlights.
+                            </div>
+                          </div>
+                        </button>
+                        <button
+                          className="w-full flex items-start gap-3 p-3 text-left hover:bg-clip-elevated rounded-lg transition-colors"
+                          onClick={() => analyzeMutation.mutate('v1')}
+                        >
+                          <Zap className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
+                          <div>
+                            <div className="font-medium text-white">V1 Scene-Based</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              Fast scene-cut detection. Good for quick splits.
+                            </div>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -283,16 +369,61 @@ export function ProjectDetailPage() {
                       </span>
                     )}
                   </div>
-                  {selectedClips.size >= 2 && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setShowCompoundCreator(true)}
-                      icon={<Layers className="w-4 h-4" />}
-                    >
-                      Combine Clips
-                    </Button>
-                  )}
+                  
+                  <div className="flex items-center gap-2">
+                    {/* Sort toggle */}
+                    {hasQualityScores && (
+                      <div className="flex items-center gap-1 bg-clip-elevated rounded-lg p-1">
+                        <button
+                          className={clsx(
+                            'flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors',
+                            sortMode === 'timeline'
+                              ? 'bg-clip-accent text-white'
+                              : 'text-gray-400 hover:text-white'
+                          )}
+                          onClick={() => setSortMode('timeline')}
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                          Timeline
+                        </button>
+                        <button
+                          className={clsx(
+                            'flex items-center gap-1.5 px-3 py-1.5 rounded text-sm transition-colors',
+                            sortMode === 'quality'
+                              ? 'bg-clip-accent text-white'
+                              : 'text-gray-400 hover:text-white'
+                          )}
+                          onClick={() => setSortMode('quality')}
+                        >
+                          <Star className="w-3.5 h-3.5" />
+                          Quality
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Generation version badge */}
+                    {generationVersion && (
+                      <span className={clsx(
+                        'text-xs px-2 py-1 rounded',
+                        generationVersion === 'v2' 
+                          ? 'bg-clip-accent/20 text-clip-accent' 
+                          : 'bg-gray-700 text-gray-400'
+                      )}>
+                        {generationVersion === 'v2' ? '✨ V2 Pipeline' : 'V1 Pipeline'}
+                      </span>
+                    )}
+                    
+                    {selectedClips.size >= 2 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setShowCompoundCreator(true)}
+                        icon={<Layers className="w-4 h-4" />}
+                      >
+                        Combine Clips
+                      </Button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -305,7 +436,7 @@ export function ProjectDetailPage() {
                 </div>
               ) : clips.length > 0 ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-                  {clips.map((clip) => (
+                  {sortedClips.map((clip, index) => (
                     <ClipCard
                       key={clip.id}
                       clip={clip}
@@ -314,6 +445,8 @@ export function ProjectDetailPage() {
                       selected={selectedClips.has(clip.id)}
                       onClick={() => handleClipClick(clip)}
                       onToggleSelection={() => toggleClipSelection(clip.id)}
+                      showQualityScore={sortMode === 'quality'}
+                      rank={sortMode === 'quality' ? index + 1 : undefined}
                     />
                   ))}
                 </div>

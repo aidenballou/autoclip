@@ -155,8 +155,13 @@ class ProjectService:
         Returns:
             True if deleted successfully
         """
-        project = await self.db.get(Project, project_id)
-        if not project:
+        from app.models.compound_clip import CompoundClip, CompoundClipItem
+        
+        # First check if project exists
+        result = await self.db.execute(
+            select(Project.id).where(Project.id == project_id)
+        )
+        if not result.scalar_one_or_none():
             return False
         
         # Delete project directory
@@ -164,7 +169,41 @@ class ProjectService:
         if project_dir.exists():
             shutil.rmtree(project_dir)
         
-        await self.db.delete(project)
+        # Manually delete related records in the correct order to avoid FK constraint issues
+        # Using raw table deletes to bypass ORM cascade which can fail with schema mismatches
+        
+        # 1. Delete compound clip items first (they reference both compound_clips and clips)
+        compound_clips_result = await self.db.execute(
+            select(CompoundClip.id).where(CompoundClip.project_id == project_id)
+        )
+        compound_clip_ids = [row[0] for row in compound_clips_result.fetchall()]
+        
+        if compound_clip_ids:
+            await self.db.execute(
+                CompoundClipItem.__table__.delete().where(
+                    CompoundClipItem.compound_clip_id.in_(compound_clip_ids)
+                )
+            )
+        
+        # 2. Delete compound clips
+        await self.db.execute(
+            CompoundClip.__table__.delete().where(CompoundClip.project_id == project_id)
+        )
+        
+        # 3. Delete clips
+        await self.db.execute(
+            Clip.__table__.delete().where(Clip.project_id == project_id)
+        )
+        
+        # 4. Delete jobs
+        await self.db.execute(
+            Job.__table__.delete().where(Job.project_id == project_id)
+        )
+        
+        # 5. Finally delete the project using raw table delete to avoid ORM cascade
+        await self.db.execute(
+            Project.__table__.delete().where(Project.id == project_id)
+        )
         await self.db.commit()
         
         return True
@@ -249,12 +288,17 @@ class ProjectService:
         
         return job
     
-    async def start_analyze_job(self, project_id: int) -> Job:
+    async def start_analyze_job(
+        self, 
+        project_id: int, 
+        segmentation_mode: Optional[str] = None
+    ) -> Job:
         """
         Start an analysis job for a project.
         
         Args:
             project_id: Project ID
+            segmentation_mode: Override segmentation mode ("v1" or "v2")
             
         Returns:
             Created job
@@ -268,6 +312,10 @@ class ProjectService:
         
         if project.status not in [ProjectStatus.DOWNLOADED, ProjectStatus.READY, ProjectStatus.ERROR]:
             raise ValueError(f"Cannot analyze in state: {project.status}")
+        
+        # Validate segmentation mode
+        if segmentation_mode and segmentation_mode not in ("v1", "v2"):
+            raise ValueError(f"Invalid segmentation_mode: {segmentation_mode}. Use 'v1' or 'v2'")
         
         # Create job record
         job = Job(
@@ -283,7 +331,8 @@ class ProjectService:
         await job_runner.start_job(
             job.id,
             "analyze",
-            project_id=project_id
+            project_id=project_id,
+            segmentation_mode=segmentation_mode
         )
         
         return job

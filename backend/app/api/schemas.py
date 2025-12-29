@@ -73,6 +73,9 @@ class ClipResponse(BaseModel):
     thumbnail_url: Optional[str] = None
     created_by: str
     ordering: int
+    quality_score: Optional[float] = None
+    anchor_time_sec: Optional[float] = None
+    generation_version: Optional[str] = None
     created_at: datetime
     
     class Config:
@@ -145,6 +148,18 @@ class ExportBatchRequest(BaseModel):
     """Request to batch export clips."""
     clip_ids: List[int] = Field(..., min_length=1)
     output_folder: Optional[str] = None
+
+
+# =============================================================================
+# Analysis Schemas
+# =============================================================================
+
+class AnalyzeRequest(BaseModel):
+    """Request to analyze a video."""
+    segmentation_mode: Optional[str] = Field(
+        None, 
+        description="Segmentation mode: 'v1' (scene-based) or 'v2' (highlight-aware). Uses config default if not specified."
+    )
 
 
 # =============================================================================

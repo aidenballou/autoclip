@@ -44,6 +44,8 @@ async def get_video_info_ytdlp(url: str) -> dict:
         settings.ytdlp_path,
         "--dump-json",
         "--no-download",
+        # Enable remote JS challenge solver for YouTube signature decryption
+        "--remote-components", "ejs:github",
         url
     ]
     
@@ -83,22 +85,53 @@ async def download_video(
     Returns:
         Path to downloaded video file
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Clean up any partial downloads first
+    for partial in output_dir.glob("*.part"):
+        try:
+            partial.unlink()
+        except Exception:
+            pass
+    for temp in output_dir.glob("*.ytdl"):
+        try:
+            temp.unlink()
+        except Exception:
+            pass
+    
     output_template = str(output_dir / f"{filename}.%(ext)s")
     
-    # Try to get MP4 format, fallback to best available
+    # More robust format selection:
+    # bv* = best video (required), ba = best audio
+    # The key is to ALWAYS require video (bv) not just best (b)
+    # Format priority:
+    # 1. Best video (mp4) + best audio (m4a) - ideal for MP4 output
+    # 2. Best video (mp4) + best audio (any) 
+    # 3. Best video (any) + best audio (any)
+    # 4. Best single format that contains video (NOT audio-only)
     cmd = [
         settings.ytdlp_path,
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+        # CRITICAL: bv* requires video stream, won't select audio-only
+        "-f", "bv*[ext=mp4]+ba[ext=m4a]/bv*[ext=mp4]+ba/bv*+ba/bv*",
         "--merge-output-format", "mp4",
         "-o", output_template,
         "--no-playlist",
         "--progress",
         "--newline",
+        # Force overwrite
+        "--force-overwrites",
+        # Embed metadata
+        "--embed-metadata",
+        # Enable remote JS challenge solver for YouTube signature decryption
+        "--remote-components", "ejs:github",
         url
     ]
+    
+    logger.info(f"Running yt-dlp command: {' '.join(cmd)}")
     
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -107,6 +140,8 @@ async def download_video(
     )
     
     downloaded_path: Optional[Path] = None
+    merged_path: Optional[Path] = None
+    output_lines = []
     
     while True:
         line = await proc.stdout.readline()
@@ -114,6 +149,7 @@ async def download_video(
             break
         
         line_str = line.decode("utf-8", errors="ignore").strip()
+        output_lines.append(line_str)
         
         # Parse progress
         if progress_callback:
@@ -121,44 +157,115 @@ async def download_video(
             progress_match = re.search(r"\[download\]\s+(\d+\.?\d*)%", line_str)
             if progress_match:
                 progress = float(progress_match.group(1))
-                await progress_callback(progress, f"Downloading: {progress:.1f}%")
+                await progress_callback(progress * 0.9, f"Downloading: {progress:.1f}%")  # Leave room for merge
             
             # Check for merger message
             elif "[Merger]" in line_str:
-                await progress_callback(95, "Merging video and audio...")
+                await progress_callback(92, "Merging video and audio...")
             
-            # Check for destination
-            elif "Destination:" in line_str:
-                dest_match = re.search(r"Destination:\s+(.+)", line_str)
-                if dest_match:
-                    downloaded_path = Path(dest_match.group(1))
+            # Check for ffmpeg merge
+            elif "Merging formats" in line_str:
+                await progress_callback(90, "Merging formats...")
             
             # Check for already downloaded
             elif "has already been downloaded" in line_str:
-                await progress_callback(100, "Video already downloaded")
+                await progress_callback(95, "Video already downloaded")
+        
+        # Track the merged output path (more reliable than Destination)
+        if "Merging formats into" in line_str:
+            merge_match = re.search(r'Merging formats into "(.+)"', line_str)
+            if merge_match:
+                merged_path = Path(merge_match.group(1))
+                logger.info(f"Merge output: {merged_path}")
+        
+        # Track destination (fallback)
+        elif "Destination:" in line_str:
+            dest_match = re.search(r"Destination:\s+(.+)", line_str)
+            if dest_match:
+                downloaded_path = Path(dest_match.group(1))
+        
+        # Track final output
+        elif line_str.startswith("[download]") and "has already been downloaded" in line_str:
+            # Extract path from "... /path/to/file.mp4 has already been downloaded"
+            path_match = re.search(r'\[download\]\s+(.+\.(?:mp4|mkv|webm|mov))\s+has already been downloaded', line_str)
+            if path_match:
+                merged_path = Path(path_match.group(1))
     
     await proc.wait()
     
     if proc.returncode != 0:
+        # Log all output for debugging
+        logger.error(f"yt-dlp failed with output:\n" + "\n".join(output_lines[-20:]))
         raise YtdlpError("Download failed - check URL and try again")
     
-    # Find the downloaded file
-    if downloaded_path and downloaded_path.exists():
-        return downloaded_path
+    if progress_callback:
+        await progress_callback(95, "Verifying download...")
     
-    # Search for the file
-    for ext in ["mp4", "mkv", "webm", "mov"]:
-        potential_path = output_dir / f"{filename}.{ext}"
-        if potential_path.exists():
-            return potential_path
+    # Priority order for finding the file:
+    # 1. Merged path from logs
+    # 2. Downloaded path from logs
+    # 3. Search for the file
     
-    # Check for any video file
-    video_extensions = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
-    for file in output_dir.iterdir():
-        if file.suffix.lower() in video_extensions:
-            return file
+    final_path = None
     
-    raise YtdlpError("Download completed but video file not found")
+    if merged_path and merged_path.exists():
+        final_path = merged_path
+        logger.info(f"Using merged path: {final_path}")
+    elif downloaded_path and downloaded_path.exists():
+        final_path = downloaded_path
+        logger.info(f"Using downloaded path: {final_path}")
+    else:
+        # Search for the file (prefer .mp4)
+        for ext in ["mp4", "mkv", "webm", "mov"]:
+            potential_path = output_dir / f"{filename}.{ext}"
+            if potential_path.exists():
+                # Make sure it's not a partial file
+                if potential_path.stat().st_size > 1000:  # At least 1KB
+                    final_path = potential_path
+                    logger.info(f"Found file: {final_path}")
+                    break
+        
+        # Last resort: any video file that's not a partial
+        if not final_path:
+            video_extensions = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+            for file in output_dir.iterdir():
+                if file.suffix.lower() in video_extensions and not file.name.endswith('.part'):
+                    if file.stat().st_size > 1000:
+                        final_path = file
+                        logger.info(f"Found video file: {final_path}")
+                        break
+    
+    if not final_path:
+        logger.error(f"No video file found in {output_dir}. Contents: {list(output_dir.iterdir())}")
+        logger.error(f"Last yt-dlp output:\n" + "\n".join(output_lines[-20:]))
+        raise YtdlpError("Download completed but video file not found")
+    
+    # Verify the file has a video stream using ffprobe
+    verify_cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_type",
+        "-of", "csv=p=0",
+        str(final_path)
+    ]
+    
+    try:
+        verify_proc = await asyncio.create_subprocess_exec(
+            *verify_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await verify_proc.communicate()
+        
+        if b"video" not in stdout:
+            logger.error(f"Downloaded file has no video stream: {final_path}")
+            logger.error(f"File size: {final_path.stat().st_size} bytes")
+            raise YtdlpError(f"Downloaded file has no video stream. The video may be unavailable or restricted.")
+    except FileNotFoundError:
+        # ffprobe not found, skip verification
+        logger.warning("ffprobe not found, skipping video stream verification")
+    
+    return final_path
 
 
 async def extract_video_title(url: str) -> str:

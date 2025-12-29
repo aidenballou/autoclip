@@ -82,8 +82,12 @@ export const startDownload = async (projectId: number): Promise<Job> => {
   return data
 }
 
-export const startAnalysis = async (projectId: number): Promise<Job> => {
-  const { data } = await api.post(`/projects/${projectId}/analyze`)
+export const startAnalysis = async (
+  projectId: number,
+  segmentationMode?: 'v1' | 'v2'
+): Promise<Job> => {
+  const params = segmentationMode ? { segmentation_mode: segmentationMode } : {}
+  const { data } = await api.post(`/projects/${projectId}/analyze`, null, { params })
   return data
 }
 

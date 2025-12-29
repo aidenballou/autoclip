@@ -19,7 +19,7 @@ class Clip(Base):
     __tablename__ = "clips"
     
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     
     # Clip boundaries (in seconds)
     start_time = Column(Float, nullable=False)
@@ -30,6 +30,11 @@ class Clip(Base):
     thumbnail_path = Column(String(4096), nullable=True)
     created_by = Column(Enum(ClipSource), default=ClipSource.AUTO, nullable=False)
     ordering = Column(Integer, nullable=False, default=0)
+    
+    # V2 pipeline fields
+    quality_score = Column(Float, nullable=True)  # Quality score from v2 pipeline
+    anchor_time_sec = Column(Float, nullable=True)  # Anchor point time (v2)
+    generation_version = Column(String(16), nullable=True, default="v1")  # "v1" or "v2"
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -59,6 +64,9 @@ class Clip(Base):
             "thumbnail_path": self.thumbnail_path,
             "created_by": self.created_by.value,
             "ordering": self.ordering,
+            "quality_score": self.quality_score,
+            "anchor_time_sec": self.anchor_time_sec,
+            "generation_version": self.generation_version,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

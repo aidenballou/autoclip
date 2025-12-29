@@ -12,7 +12,7 @@ class CompoundClip(Base):
     __tablename__ = "compound_clips"
     
     id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     
     # Timestamps
@@ -50,8 +50,8 @@ class CompoundClipItem(Base):
     __tablename__ = "compound_clip_items"
     
     id = Column(Integer, primary_key=True, index=True)
-    compound_clip_id = Column(Integer, ForeignKey("compound_clips.id"), nullable=False)
-    clip_id = Column(Integer, ForeignKey("clips.id"), nullable=False)
+    compound_clip_id = Column(Integer, ForeignKey("compound_clips.id", ondelete="CASCADE"), nullable=False)
+    clip_id = Column(Integer, ForeignKey("clips.id", ondelete="CASCADE"), nullable=False)
     
     # Optional overrides for start/end within the source clip
     start_override = Column(Float, nullable=True)

@@ -21,7 +21,7 @@ from app.utils.ffmpeg import (
     FFmpegError
 )
 from app.utils.ytdlp import download_video, YtdlpError
-from app.pipeline.clip_processor import generate_clips_from_video
+from app.pipeline.clip_processor import generate_clips_from_video, generate_clips_auto
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ async def handle_analyze(
     job_id: int,
     project_id: int,
     progress_callback: Callable,
+    segmentation_mode: Optional[str] = None,
     **kwargs
 ) -> dict:
     """
@@ -116,6 +117,7 @@ async def handle_analyze(
         job_id: Job ID
         project_id: Project ID
         progress_callback: Async callback for progress updates
+        segmentation_mode: Override segmentation mode ("v1" or "v2")
         
     Returns:
         Result dictionary with clip count
@@ -134,29 +136,30 @@ async def handle_analyze(
         source_path = project.source_path
         video_duration = project.duration
     
+    # Get the project directory for caching/debug
+    project_dir = settings.projects_dir / str(project_id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Determine mode
+    mode = segmentation_mode or settings.segmentation_mode
+    
     try:
-        await progress_callback(0, "Detecting scenes...")
+        await progress_callback(0, f"Starting analysis ({mode})...")
         
-        # Scene detection progress is 0-80%
-        async def scene_progress(p):
-            await progress_callback(p * 0.8, f"Detecting scenes: {p:.0f}%")
+        # Wrapper for progress callback to match expected signature
+        async def pipeline_progress(pct, msg):
+            await progress_callback(pct * 0.85, msg)  # Reserve 15% for thumbnails
         
-        # Detect scenes
-        scene_timestamps = await detect_scenes(
-            source_path,
-            threshold=settings.scene_threshold,
-            progress_callback=scene_progress
+        # Use unified pipeline interface
+        clips_data = await generate_clips_auto(
+            video_path=source_path,
+            video_duration=video_duration,
+            project_dir=project_dir,
+            mode=mode,
+            progress_callback=pipeline_progress
         )
         
-        await progress_callback(80, "Processing segments...")
-        
-        # Generate clips from scenes
-        segments = generate_clips_from_video(
-            scene_timestamps,
-            video_duration
-        )
-        
-        await progress_callback(85, f"Creating {len(segments)} clips...")
+        await progress_callback(85, f"Creating {len(clips_data)} clips...")
         
         # Delete existing auto-generated clips
         async with async_session_maker() as session:
@@ -170,24 +173,27 @@ async def handle_analyze(
                 await session.delete(clip)
             await session.commit()
         
-        # Create clip records
+        # Create clip records with new fields
         async with async_session_maker() as session:
-            for i, seg in enumerate(segments):
+            for i, clip_data in enumerate(clips_data):
                 clip = Clip(
                     project_id=project_id,
-                    start_time=seg.start,
-                    end_time=seg.end,
+                    start_time=clip_data["start_time"],
+                    end_time=clip_data["end_time"],
                     name=f"Clip {i + 1}",
                     created_by=ClipSource.AUTO,
-                    ordering=i
+                    ordering=i,
+                    quality_score=clip_data.get("quality_score"),
+                    anchor_time_sec=clip_data.get("anchor_time_sec"),
+                    generation_version=clip_data.get("generation_version", mode)
                 )
                 session.add(clip)
             await session.commit()
         
-        await progress_callback(90, "Generating thumbnails...")
+        await progress_callback(88, "Generating thumbnails...")
         
         # Generate thumbnails
-        await generate_clip_thumbnails(project_id, progress_callback, 90, 100)
+        await generate_clip_thumbnails(project_id, progress_callback, 88, 100)
         
         # Update project status
         async with async_session_maker() as session:
@@ -195,14 +201,15 @@ async def handle_analyze(
             project.status = ProjectStatus.READY
             await session.commit()
         
-        await progress_callback(100, f"Analysis complete - {len(segments)} clips created")
+        await progress_callback(100, f"Analysis complete - {len(clips_data)} clips created ({mode})")
         
         return {
-            "clip_count": len(segments),
-            "scene_count": len(scene_timestamps)
+            "clip_count": len(clips_data),
+            "segmentation_mode": mode
         }
         
-    except FFmpegError as e:
+    except (FFmpegError, Exception) as e:
+        logger.exception(f"Analysis failed: {e}")
         async with async_session_maker() as session:
             project = await session.get(Project, project_id)
             project.status = ProjectStatus.ERROR

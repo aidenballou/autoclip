@@ -39,8 +39,14 @@ export interface Clip {
   thumbnail_url: string | null
   created_by: 'auto' | 'manual'
   ordering: number
+  quality_score: number | null
+  anchor_time_sec: number | null
+  generation_version: string | null
   created_at: string
 }
+
+// Segmentation mode type
+export type SegmentationMode = 'v1' | 'v2'
 
 // Compound clip types
 export interface CompoundClipItem {

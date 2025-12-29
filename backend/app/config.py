@@ -1,6 +1,7 @@
 """Application configuration."""
 import os
 from pathlib import Path
+from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,7 +28,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     projects_dir: Path = Path("./data/projects")
     
-    # Video processing
+    # Segmentation pipeline
+    segmentation_mode: Literal["v1", "v2"] = "v2"  # v1=scene-based, v2=highlight-aware
+    
+    # Video processing (used by both v1 and v2)
     scene_threshold: float = 0.3  # FFmpeg scene detection threshold
     min_clip_seconds: float = 5.0  # Minimum clip duration
     max_clip_seconds: float = 60.0  # Maximum clip duration
