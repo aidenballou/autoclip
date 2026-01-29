@@ -1,6 +1,6 @@
 # AutoClip
 
-A local macOS web application that automatically splits long video compilations into individual highlight clips using scene detection. Features a modern UI for previewing, trimming, combining, and exporting clips.
+A local desktop web application that automatically splits long video compilations into individual highlight clips using scene detection. Features a modern UI for previewing, trimming, combining, and exporting clips.
 
 ![AutoClip Demo](docs/demo.gif)
 
@@ -15,7 +15,7 @@ A local macOS web application that automatically splits long video compilations 
 
 ## Prerequisites
 
-- macOS (tested on Apple Silicon and Intel)
+- macOS or Windows (native PowerShell or WSL2)
 - Python 3.11+
 - Node.js 18+
 - FFmpeg
@@ -29,15 +29,34 @@ Using Homebrew:
 brew install python@3.11 node ffmpeg yt-dlp
 ```
 
+Windows (PowerShell):
+
+```powershell
+# winget (Windows 10/11)
+winget install Python.Python.3.11 OpenJS.NodeJS.LTS Gyan.FFmpeg yt-dlp.yt-dlp
+
+# or Chocolatey
+choco install python nodejs-lts ffmpeg yt-dlp -y
+
+# or Scoop
+scoop install python nodejs ffmpeg yt-dlp
+```
+
 Verify installation:
 
 ```bash
 ./scripts/ensure_deps.sh
 ```
 
+```powershell
+.\scripts\ensure_deps.ps1
+```
+
 ## Quick Start
 
 ### 1. Clone and Setup
+
+macOS / Linux:
 
 ```bash
 cd AutoClip
@@ -53,10 +72,34 @@ cd ../frontend
 npm install
 ```
 
+Windows (PowerShell):
+
+```powershell
+cd AutoClip
+
+# Install backend dependencies
+cd backend
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# Install frontend dependencies
+cd ..\frontend
+npm install
+```
+
 ### 2. Run Development Server
+
+macOS / Linux:
 
 ```bash
 ./scripts/dev.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1
 ```
 
 This starts:
@@ -88,7 +131,30 @@ export SERVE_FRONTEND=true
 python -m uvicorn app.main:app --port 8000
 ```
 
+Windows (PowerShell):
+
+```powershell
+# Build frontend
+powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
+
+# Run backend with static serving
+cd backend
+$env:SERVE_FRONTEND=$true
+python -m uvicorn app.main:app --port 8000
+```
+
 Open http://localhost:8000
+
+## Windows Notes
+
+- For WSL2, run the app inside your Linux distro and use Linux paths (e.g. `/mnt/c/...` for Windows files).
+- For local file imports, the path must be accessible to the backend OS (native Windows paths for native, WSL paths for WSL2).
+
+## Windows Quick Test
+
+1. Run `powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1`
+2. Open http://localhost:5173
+3. Create a project from a local file
 
 ## Project Structure
 
@@ -118,8 +184,11 @@ AutoClip/
 │   └── public/
 └── scripts/
     ├── dev.sh             # Development launcher
+    ├── dev.ps1            # Development launcher (Windows)
     ├── build.sh           # Production build
-    └── ensure_deps.sh     # Dependency checker
+    ├── build.ps1          # Production build (Windows)
+    ├── ensure_deps.sh     # Dependency checker
+    └── ensure_deps.ps1    # Dependency checker (Windows)
 ```
 
 ## Configuration
