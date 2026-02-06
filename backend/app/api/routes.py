@@ -1,9 +1,11 @@
 """API routes."""
+import logging
 import shutil
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,9 +36,33 @@ from app.api.schemas import (
     JobResponse,
     HealthResponse,
     DependencyCheckResponse,
+    NicheCreate,
+    NicheUpdate,
+    NicheResponse,
+    AccountCreate,
+    AccountUpdate,
+    AccountResponse,
+    PublishRequest,
+    PublishResultResponse,
+    PlatformSpecsResponse,
+    ClipValidationResult,
+    UploadRequest,
+    UploadResultResponse,
+    OAuthUrlResponse,
+    OAuthCallbackRequest,
+    OAuthCallbackConnectedResponse,
+    OAuthCallbackSelectionRequiredResponse,
+    YouTubeChannelSelectionRequest,
+    YouTubePendingChannelsResponse,
+    UploadSelectedRequest,
+    UploadSelectedResponse,
 )
+from app.services.niche_service import NicheService
+from app.services.publish_service import PublishService
+from app.services.upload_service import UploadService, OAuthUpstreamError
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -619,3 +645,475 @@ def _compound_to_response(compound: CompoundClip) -> CompoundClipResponse:
         created_at=compound.created_at
     )
 
+
+# =============================================================================
+# Niches
+# =============================================================================
+
+@router.post("/niches", response_model=NicheResponse)
+async def create_niche(
+    data: NicheCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new niche."""
+    service = NicheService(db)
+    try:
+        niche = await service.create_niche(
+            name=data.name,
+            description=data.description,
+            default_hashtags=data.default_hashtags,
+            default_caption_template=data.default_caption_template,
+            default_text_overlay=data.default_text_overlay,
+            default_text_position=data.default_text_position,
+            default_text_color=data.default_text_color,
+            default_text_size=data.default_text_size,
+            default_audio_path=data.default_audio_path,
+            default_audio_volume=data.default_audio_volume,
+        )
+        return await _niche_to_response(niche, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/niches", response_model=List[NicheResponse])
+async def list_niches(db: AsyncSession = Depends(get_db)):
+    """List all niches."""
+    service = NicheService(db)
+    niches = await service.list_niches()
+    return [await _niche_to_response(n, db) for n in niches]
+
+
+@router.get("/niches/{niche_id}", response_model=NicheResponse)
+async def get_niche(niche_id: int, db: AsyncSession = Depends(get_db)):
+    """Get a niche by ID."""
+    service = NicheService(db)
+    niche = await service.get_niche(niche_id)
+    if not niche:
+        raise HTTPException(status_code=404, detail="Niche not found")
+    return await _niche_to_response(niche, db)
+
+
+@router.patch("/niches/{niche_id}", response_model=NicheResponse)
+async def update_niche(
+    niche_id: int,
+    data: NicheUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a niche."""
+    service = NicheService(db)
+    try:
+        niche = await service.update_niche(
+            niche_id=niche_id,
+            name=data.name,
+            description=data.description,
+            default_hashtags=data.default_hashtags,
+            default_caption_template=data.default_caption_template,
+            default_text_overlay=data.default_text_overlay,
+            default_text_position=data.default_text_position,
+            default_text_color=data.default_text_color,
+            default_text_size=data.default_text_size,
+            default_audio_path=data.default_audio_path,
+            default_audio_volume=data.default_audio_volume,
+        )
+        return await _niche_to_response(niche, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/niches/{niche_id}")
+async def delete_niche(niche_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a niche and all associated accounts."""
+    service = NicheService(db)
+    if not await service.delete_niche(niche_id):
+        raise HTTPException(status_code=404, detail="Niche not found")
+    return {"status": "deleted"}
+
+
+# =============================================================================
+# Accounts
+# =============================================================================
+
+@router.post("/accounts", response_model=AccountResponse)
+async def create_account(
+    data: AccountCreate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a new account for a niche."""
+    service = NicheService(db)
+    try:
+        account = await service.create_account(
+            niche_id=data.niche_id,
+            platform=data.platform,
+            handle=data.handle,
+            display_name=data.display_name,
+            auto_upload=data.auto_upload,
+        )
+        return _account_to_response(account)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/accounts", response_model=List[AccountResponse])
+async def list_accounts(
+    niche_id: Optional[int] = Query(None, description="Filter by niche ID"),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all accounts, optionally filtered by niche."""
+    service = NicheService(db)
+    accounts = await service.list_accounts(niche_id)
+    return [_account_to_response(a) for a in accounts]
+
+
+@router.get("/niches/{niche_id}/accounts", response_model=List[AccountResponse])
+async def list_niche_accounts(niche_id: int, db: AsyncSession = Depends(get_db)):
+    """List all accounts for a specific niche."""
+    service = NicheService(db)
+    niche = await service.get_niche(niche_id)
+    if not niche:
+        raise HTTPException(status_code=404, detail="Niche not found")
+    accounts = await service.list_accounts(niche_id)
+    return [_account_to_response(a) for a in accounts]
+
+
+@router.get("/accounts/{account_id}", response_model=AccountResponse)
+async def get_account(account_id: int, db: AsyncSession = Depends(get_db)):
+    """Get an account by ID."""
+    service = NicheService(db)
+    account = await service.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return _account_to_response(account)
+
+
+@router.patch("/accounts/{account_id}", response_model=AccountResponse)
+async def update_account(
+    account_id: int,
+    data: AccountUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update an account."""
+    service = NicheService(db)
+    try:
+        account = await service.update_account(
+            account_id=account_id,
+            handle=data.handle,
+            display_name=data.display_name,
+            auto_upload=data.auto_upload,
+        )
+        return _account_to_response(account)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete an account."""
+    service = NicheService(db)
+    if not await service.delete_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"status": "deleted"}
+
+
+# =============================================================================
+# Niche/Account Helpers
+# =============================================================================
+
+async def _niche_to_response(niche, db: AsyncSession) -> NicheResponse:
+    """Convert niche model to response with account count."""
+    import json
+    from app.models.account import Account
+    
+    result = await db.execute(
+        select(func.count(Account.id)).where(Account.niche_id == niche.id)
+    )
+    account_count = result.scalar()
+    
+    hashtags = []
+    if niche.default_hashtags:
+        try:
+            hashtags = json.loads(niche.default_hashtags)
+        except json.JSONDecodeError:
+            hashtags = []
+    
+    return NicheResponse(
+        id=niche.id,
+        name=niche.name,
+        description=niche.description,
+        default_hashtags=hashtags,
+        default_caption_template=niche.default_caption_template,
+        default_text_overlay=niche.default_text_overlay,
+        default_text_position=niche.default_text_position,
+        default_text_color=niche.default_text_color,
+        default_text_size=niche.default_text_size,
+        default_audio_path=niche.default_audio_path,
+        default_audio_volume=niche.default_audio_volume,
+        account_count=account_count,
+        created_at=niche.created_at,
+        updated_at=niche.updated_at,
+    )
+
+
+def _account_to_response(account) -> AccountResponse:
+    """Convert account model to response."""
+    return AccountResponse(
+        id=account.id,
+        niche_id=account.niche_id,
+        platform=account.platform.value,
+        handle=account.handle,
+        display_name=account.display_name,
+        auth_status=account.auth_status.value,
+        platform_user_id=account.platform_user_id,
+        youtube_channel_id=account.platform_user_id if account.platform.value == "youtube_shorts" else None,
+        youtube_channel_title=account.display_name if account.platform.value == "youtube_shorts" else None,
+        auto_upload=account.auto_upload,
+        created_at=account.created_at,
+        updated_at=account.updated_at,
+        last_upload_at=account.last_upload_at,
+    )
+
+
+# =============================================================================
+# Publish
+# =============================================================================
+
+@router.post("/projects/{project_id}/publish", response_model=JobResponse)
+async def publish_clip(
+    project_id: int,
+    data: PublishRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Publish a clip to multiple platforms.
+    
+    Creates exports for each platform with appropriate formatting
+    and generates metadata.json files for each export.
+    """
+    service = PublishService(db)
+    try:
+        # Create the publish job
+        job = await service.create_publish_job(
+            project_id=project_id,
+            clip_id=data.clip_id,
+            niche_id=data.niche_id,
+            account_ids=data.account_ids,
+            output_base_folder=data.output_folder,
+            caption=data.caption,
+            hashtags=data.hashtags,
+            text_overlay_text=data.text_overlay.text if data.text_overlay else None,
+            text_overlay_position=data.text_overlay.position if data.text_overlay else "bottom",
+            text_overlay_color=data.text_overlay.color if data.text_overlay else "#FFFFFF",
+            text_overlay_size=data.text_overlay.size if data.text_overlay else 48,
+            background_audio_path=data.audio_overlay.path if data.audio_overlay else None,
+            background_audio_volume=data.audio_overlay.volume if data.audio_overlay else 30,
+            original_audio_volume=data.audio_overlay.original_volume if data.audio_overlay else 100,
+            use_vertical_preset=data.use_vertical_preset,
+            vertical_framing=data.vertical_framing,
+            vertical_resolution=data.vertical_resolution,
+        )
+        
+        # Execute the job in background (for now, run synchronously)
+        # In production, this would be queued to a background worker
+        from app.workers.handlers import run_publish_job
+        import asyncio
+        asyncio.create_task(run_publish_job(job.id))
+        
+        return JobResponse.model_validate(job)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/platforms", response_model=List[str])
+async def list_platforms():
+    """List all supported platforms."""
+    from app.models.account import Platform
+    return [p.value for p in Platform]
+
+
+@router.get("/platforms/{platform}/specs", response_model=PlatformSpecsResponse)
+async def get_platform_specs(
+    platform: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get specifications and requirements for a platform."""
+    service = PublishService(db)
+    try:
+        specs = await service.get_platform_requirements(platform)
+        return PlatformSpecsResponse(**specs)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/clips/{clip_id}/validate-platforms")
+async def validate_clip_for_platforms(
+    clip_id: int,
+    platforms: List[str] = Query(..., description="Platform names to validate against"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Validate if a clip meets requirements for target platforms."""
+    service = PublishService(db)
+    try:
+        results = await service.validate_clip_for_platforms(clip_id, platforms)
+        return results
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# Upload / Direct Platform Upload
+# =============================================================================
+
+@router.post("/projects/{project_id}/upload", response_model=JobResponse)
+async def upload_video(
+    project_id: int,
+    data: UploadRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Upload a video directly to a platform.
+    
+    Currently supports YouTube Shorts with OAuth.
+    Other platforms return export-only guidance.
+    """
+    service = UploadService(db)
+    try:
+        job = await service.create_upload_job(
+            project_id=project_id,
+            video_path=data.video_path,
+            account_id=data.account_id,
+            title=data.title,
+            description=data.description,
+            tags=data.tags,
+            privacy_status=data.privacy_status,
+        )
+        
+        # Execute upload in background
+        from app.workers.handlers import run_upload_job
+        import asyncio
+        asyncio.create_task(run_upload_job(job.id))
+        
+        return JobResponse.model_validate(job)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/projects/{project_id}/upload-selected", response_model=UploadSelectedResponse)
+async def upload_selected_clips(
+    project_id: int,
+    data: UploadSelectedRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Create one direct-upload job per selected clip for YouTube."""
+    service = UploadService(db)
+    try:
+        result = await service.upload_selected_clips(
+            project_id=project_id,
+            clip_ids=data.clip_ids,
+            account_id=data.account_id,
+            niche_id=data.niche_id,
+            privacy_status=data.privacy_status,
+            title_prefix=data.title_prefix,
+            description_template=data.description_template,
+            hashtags=data.hashtags,
+            use_vertical_preset=data.use_vertical_preset,
+            vertical_framing=data.vertical_framing,
+            vertical_resolution=data.vertical_resolution,
+        )
+        return UploadSelectedResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except OAuthUpstreamError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/accounts/{account_id}/oauth-url", response_model=OAuthUrlResponse)
+async def get_oauth_url(
+    account_id: int,
+    redirect_uri: str = Query(..., description="OAuth redirect URI"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get OAuth URL for connecting a platform account.
+    
+    Redirect user to this URL to authorize the application.
+    """
+    service = UploadService(db)
+    try:
+        result = await service.get_oauth_url(account_id, redirect_uri)
+        return OAuthUrlResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/accounts/{account_id}/oauth-callback")
+async def oauth_callback(
+    account_id: int,
+    data: OAuthCallbackRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Complete OAuth flow with authorization code.
+    
+    Called after user authorizes the application.
+    """
+    service = UploadService(db)
+    try:
+        result = await service.complete_oauth(
+            account_id=account_id,
+            authorization_code=data.code,
+            redirect_uri=data.redirect_uri,
+        )
+        if result["status"] == "connected":
+            payload = OAuthCallbackConnectedResponse(
+                account=_account_to_response(result["account"])
+            )
+            return payload
+
+        payload = OAuthCallbackSelectionRequiredResponse(
+            account_id=result["account_id"],
+            selection_token=result["selection_token"],
+            channels=result["channels"],
+        )
+        return JSONResponse(status_code=202, content=payload.model_dump())
+    except OAuthUpstreamError as e:
+        logger.warning(
+            "OAuth callback upstream error for account_id=%s: %s",
+            account_id,
+            e,
+        )
+        raise HTTPException(status_code=502, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/accounts/{account_id}/youtube-channels/pending", response_model=YouTubePendingChannelsResponse)
+async def get_pending_youtube_channels(
+    account_id: int,
+    selection_token: str = Query(..., description="Pending channel selection token"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get pending channel options after OAuth callback selection_required response."""
+    service = UploadService(db)
+    try:
+        result = await service.get_pending_youtube_channels(account_id, selection_token)
+        return YouTubePendingChannelsResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/accounts/{account_id}/youtube-channel-selection", response_model=AccountResponse)
+async def finalize_youtube_channel_selection(
+    account_id: int,
+    data: YouTubeChannelSelectionRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Finalize selected YouTube channel and connect account."""
+    service = UploadService(db)
+    try:
+        account = await service.finalize_youtube_channel_selection(
+            account_id=account_id,
+            selection_token=data.selection_token,
+            channel_id=data.channel_id,
+        )
+        return _account_to_response(account)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

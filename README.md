@@ -1,17 +1,27 @@
 # AutoClip
 
-A local desktop web application that automatically splits long video compilations into individual highlight clips using scene detection. Features a modern UI for previewing, trimming, combining, and exporting clips.
+A local desktop web application that automatically splits long video compilations into individual highlight clips using scene detection. Features a modern UI for previewing, trimming, combining, and exporting clips with multi-platform publishing support.
 
 ![AutoClip Demo](docs/demo.gif)
 
 ## Features
 
+### Core Features
 - **YouTube or Local Video Import**: Download from YouTube or use local video files
 - **Automatic Scene Detection**: Uses FFmpeg to detect scene changes and create clips
 - **Smart Clip Generation**: Enforces 5-60 second clip lengths, automatically merging or splitting as needed
 - **Interactive Editing**: Trim clip boundaries, rename clips, combine multiple clips
 - **Batch Export**: Export individual clips or batches to any folder
 - **Real-time Progress**: Track download, analysis, and export progress
+
+### New in Sprint 2
+- **Niche & Account Management**: Organize accounts by content category (NBA, Fitness, etc.)
+- **Multi-Platform Support**: Configure accounts for YouTube Shorts, TikTok, Instagram Reels, X/Twitter, Snapchat
+- **Text Overlay**: Add customizable text overlays with position, color, and size options
+- **Background Audio**: Mix background music with original audio, with volume controls
+- **Vertical Preset**: Auto-format clips to 9:16 (1080x1920) for shorts/reels
+- **Publish Pipeline**: Export clips to per-platform folders with metadata.json
+- **Direct Upload**: YouTube Shorts upload with OAuth integration (other platforms export-only)
 
 ## Prerequisites
 
@@ -117,6 +127,44 @@ This starts:
 6. Browse clips, edit boundaries, select clips
 7. Set output folder and export!
 
+### 4. Multi-Platform Publishing (New!)
+
+1. Go to **Niches** in the top navigation
+2. Create a niche (e.g., "NBA Highlights")
+3. Add accounts for each platform you want to publish to
+4. Open a project and select a clip
+5. Click "Publish..." in the clip editor
+6. Select niche and accounts, configure settings
+7. Click "Publish" to export per-platform files with metadata
+
+## Platform Upload Notes
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| YouTube Shorts | Direct Upload | Requires OAuth setup (see below) |
+| TikTok | Export Only | Use metadata.json for manual upload |
+| Instagram Reels | Export Only | Use metadata.json for manual upload |
+| X / Twitter | Export Only | API requires partner approval |
+| Snapchat | Export Only | Use metadata.json for manual upload |
+
+Only YouTube Shorts supports the in-app **Connect** OAuth flow. Other platforms remain export-only.
+
+### YouTube OAuth Setup (for Direct Upload)
+
+To enable direct uploads to YouTube Shorts:
+
+1. Create a Google Cloud project at console.cloud.google.com
+2. Enable the YouTube Data API v3
+3. Create OAuth 2.0 credentials
+4. Set environment variables:
+
+```bash
+export YOUTUBE_CLIENT_ID="your-client-id"
+export YOUTUBE_CLIENT_SECRET="your-client-secret"
+```
+
+5. In the app, go to Niches, add a YouTube Shorts account, and click "Connect"
+
 ## Production Mode
 
 Build and serve from a single server:
@@ -164,9 +212,9 @@ AutoClip/
 │   ├── app/
 │   │   ├── api/           # REST API routes
 │   │   ├── db/            # Database setup
-│   │   ├── models/        # SQLAlchemy models
+│   │   ├── models/        # SQLAlchemy models (Project, Clip, Niche, Account)
 │   │   ├── pipeline/      # Video processing logic
-│   │   ├── services/      # Business logic
+│   │   ├── services/      # Business logic (clip, niche, publish, upload)
 │   │   ├── utils/         # FFmpeg/yt-dlp utilities
 │   │   ├── workers/       # Background job system
 │   │   ├── config.py      # Settings
@@ -176,9 +224,9 @@ AutoClip/
 ├── frontend/
 │   ├── src/
 │   │   ├── api/           # API client
-│   │   ├── components/    # React components
+│   │   ├── components/    # React components (ClipEditor, PublishModal, etc.)
 │   │   ├── hooks/         # Custom hooks
-│   │   ├── pages/         # Page components
+│   │   ├── pages/         # Page components (Projects, Niches)
 │   │   ├── types/         # TypeScript types
 │   │   └── utils/         # Utilities
 │   └── public/
@@ -209,6 +257,15 @@ MAX_CLIP_SECONDS=60      # Maximum clip duration
 # Export Quality
 EXPORT_VIDEO_CRF=18      # Lower = better quality (18-28)
 EXPORT_AUDIO_BITRATE=192k
+
+# Vertical Preset (for shorts/reels)
+VERTICAL_WIDTH=1080
+VERTICAL_HEIGHT=1920
+VERTICAL_FPS=30
+
+# YouTube Upload (optional)
+YOUTUBE_CLIENT_ID=your-client-id
+YOUTUBE_CLIENT_SECRET=your-client-secret
 ```
 
 ## API Overview
@@ -223,6 +280,12 @@ EXPORT_AUDIO_BITRATE=192k
 | `/api/clips/{id}` | PATCH | Update clip (trim, rename) |
 | `/api/projects/{id}/compound-clips` | POST | Create compound clip |
 | `/api/projects/{id}/exports` | POST | Export clip(s) |
+| `/api/projects/{id}/publish` | POST | Publish to multiple platforms |
+| `/api/niches` | GET/POST | List/create niches |
+| `/api/niches/{id}` | GET/PATCH/DELETE | Manage niche |
+| `/api/accounts` | GET/POST | List/create accounts |
+| `/api/accounts/{id}` | GET/PATCH/DELETE | Manage account |
+| `/api/platforms` | GET | List supported platforms |
 | `/api/jobs/{id}` | GET | Get job status |
 
 Full API documentation: http://localhost:8000/docs
@@ -266,6 +329,12 @@ Adjust `SCENE_THRESHOLD` in `.env`:
 - Lower (0.1-0.2): More sensitive, more clips
 - Higher (0.4-0.5): Less sensitive, fewer clips
 
+### Text overlay not appearing
+
+- Ensure the font path in config is valid for your OS
+- macOS: `/System/Library/Fonts/Helvetica.ttc`
+- Linux: `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`
+
 ## Running Tests
 
 ```bash
@@ -281,6 +350,8 @@ Uses asyncio-based background tasks for long-running operations:
 - Download jobs
 - Analysis jobs (scene detection + thumbnail generation)
 - Export jobs (single clip, compound clip, batch)
+- Publish jobs (multi-platform export with overlays)
+- Upload jobs (direct platform upload)
 
 Progress is tracked in SQLite and polled by the frontend.
 
@@ -291,14 +362,25 @@ Progress is tracked in SQLite and polled by the frontend.
 3. **Post-processing**: Split long segments (>60s), merge short ones (<5s)
 4. **Thumbnail Generation**: Extract frame at clip midpoint
 5. **Export**: Re-encode with H.264/AAC for compatibility
+6. **Overlays** (optional): Text overlay, background audio mixing
+7. **Vertical Format** (optional): Scale/pad to 9:16 aspect ratio
 
-### Export Destinations (Future)
+### Multi-Platform Publishing
 
-The export system is designed for extensibility. Future destinations could include:
-- TikTok direct upload
-- Instagram Reels
-- YouTube Shorts
-- X/Twitter video
+1. Select clip and target accounts
+2. Configure caption, hashtags, overlays
+3. System exports to per-platform folders:
+   ```
+   output_folder/
+   ├── youtube_shorts/
+   │   ├── clip_name_youtube_shorts.mp4
+   │   └── clip_name_metadata.json
+   ├── tiktok/
+   │   ├── clip_name_tiktok.mp4
+   │   └── clip_name_metadata.json
+   └── ...
+   ```
+4. metadata.json includes caption, hashtags, platform specs for manual upload
 
 ## License
 
@@ -311,4 +393,3 @@ MIT
 3. Make your changes
 4. Run tests
 5. Submit a pull request
-

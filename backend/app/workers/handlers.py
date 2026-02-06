@@ -476,3 +476,210 @@ async def handle_export_batch(
         "output_paths": exported
     }
 
+
+async def run_publish_job(job_id: int):
+    """
+    Run a publish job in the background.
+    
+    This is called from the publish endpoint to execute the job asynchronously.
+    """
+    from app.services.publish_service import PublishService
+    from app.models.job import Job, JobStatus
+    from datetime import datetime
+    
+    async with async_session_maker() as session:
+        try:
+            service = PublishService(session)
+            
+            async def progress_callback(progress: float):
+                job = await session.get(Job, job_id)
+                if job:
+                    job.progress = progress
+                    await session.commit()
+            
+            result = await service.execute_publish_job(job_id, progress_callback)
+            
+            logger.info(f"Publish job {job_id} completed: {result}")
+            
+        except Exception as e:
+            logger.exception(f"Publish job {job_id} failed: {e}")
+            job = await session.get(Job, job_id)
+            if job:
+                job.status = JobStatus.FAILED
+                job.error = str(e)
+                job.completed_at = datetime.utcnow()
+                await session.commit()
+
+
+async def handle_publish(
+    job_id: int,
+    project_id: int,
+    progress_callback: Callable,
+    **kwargs
+) -> dict:
+    """
+    Handle publish job - exports clip to multiple platforms.
+    
+    The job metadata contains all publish parameters (clip_id, niche_id, etc.)
+    
+    Args:
+        job_id: Job ID
+        project_id: Project ID
+        progress_callback: Async callback for progress updates
+        
+    Returns:
+        Result dictionary with export results
+    """
+    from app.services.publish_service import PublishService
+    
+    async with async_session_maker() as session:
+        service = PublishService(session)
+        
+        async def publish_progress(progress: float):
+            await progress_callback(progress, f"Publishing: {progress:.0f}%")
+        
+        result = await service.execute_publish_job(job_id, publish_progress)
+        
+        await progress_callback(100, f"Published to {len(result['exports'])} platforms")
+        
+        return result
+
+
+async def run_upload_job(job_id: int):
+    """
+    Run an upload job in the background.
+    
+    This is called from the upload endpoint to execute the job asynchronously.
+    """
+    from app.services.upload_service import UploadService
+    from app.models.job import Job, JobStatus
+    from datetime import datetime
+    import json
+    from pathlib import Path
+    
+    async with async_session_maker() as session:
+        try:
+            job = await session.get(Job, job_id)
+            if not job:
+                logger.error(f"Upload job {job_id} not found")
+                return
+            
+            metadata = json.loads(job.result)
+            
+            # Update job status
+            job.status = JobStatus.RUNNING
+            job.started_at = datetime.utcnow()
+            job.message = f"Uploading to {metadata['platform']}..."
+            await session.commit()
+            
+            service = UploadService(session)
+            
+            result = await service.execute_upload(
+                account_id=metadata["account_id"],
+                video_path=metadata["video_path"],
+                title=metadata["title"],
+                description=metadata["description"],
+                tags=metadata.get("tags"),
+                privacy_status=metadata.get("privacy_status", "private"),
+            )
+            
+            # Update job with result
+            job.progress = 100
+            job.result = json.dumps({
+                "success": result.success,
+                "platform": result.platform,
+                "video_id": result.video_id,
+                "video_url": result.video_url,
+                "error": result.error,
+            })
+            
+            if result.success:
+                job.status = JobStatus.COMPLETED
+                job.message = f"Uploaded successfully: {result.video_url}"
+            else:
+                job.status = JobStatus.FAILED
+                job.error = result.error
+                job.message = f"Upload failed: {result.error}"
+            
+            job.completed_at = datetime.utcnow()
+            await session.commit()
+            
+            logger.info(f"Upload job {job_id} {'completed' if result.success else 'failed'}")
+
+            if metadata.get("delete_after_upload") and metadata.get("temp_video_path"):
+                temp_path = Path(metadata["temp_video_path"])
+                if temp_path.exists():
+                    temp_path.unlink()
+            
+        except Exception as e:
+            logger.exception(f"Upload job {job_id} failed: {e}")
+            job = await session.get(Job, job_id)
+            if job:
+                metadata = {}
+                if job.result:
+                    try:
+                        metadata = json.loads(job.result)
+                    except json.JSONDecodeError:
+                        metadata = {}
+                job.status = JobStatus.FAILED
+                job.error = str(e)
+                job.completed_at = datetime.utcnow()
+                await session.commit()
+                if metadata.get("delete_after_upload") and metadata.get("temp_video_path"):
+                    temp_path = Path(metadata["temp_video_path"])
+                    if temp_path.exists():
+                        temp_path.unlink()
+
+
+async def handle_upload(
+    job_id: int,
+    project_id: int,
+    progress_callback: Callable,
+    **kwargs
+) -> dict:
+    """
+    Handle upload job - uploads video to a platform.
+    
+    The job metadata contains upload parameters.
+    
+    Args:
+        job_id: Job ID
+        project_id: Project ID
+        progress_callback: Async callback for progress updates
+        
+    Returns:
+        Result dictionary with upload result
+    """
+    from app.services.upload_service import UploadService
+    from app.models.job import Job
+    import json
+    
+    async with async_session_maker() as session:
+        job = await session.get(Job, job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+        
+        metadata = json.loads(job.result)
+        
+        service = UploadService(session)
+        
+        await progress_callback(10, f"Uploading to {metadata['platform']}...")
+        
+        result = await service.execute_upload(
+            account_id=metadata["account_id"],
+            video_path=metadata["video_path"],
+            title=metadata["title"],
+            description=metadata["description"],
+            tags=metadata.get("tags"),
+            privacy_status=metadata.get("privacy_status", "private"),
+        )
+        
+        await progress_callback(100, "Upload complete" if result.success else f"Upload failed: {result.error}")
+        
+        return {
+            "success": result.success,
+            "platform": result.platform,
+            "video_id": result.video_id,
+            "video_url": result.video_url,
+            "error": result.error,
+        }
