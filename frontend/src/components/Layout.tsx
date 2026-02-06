@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Scissors, FolderOpen, Settings } from 'lucide-react'
+import { Scissors, FolderOpen, Users } from 'lucide-react'
 
 interface LayoutProps {
   children: ReactNode
@@ -34,6 +34,13 @@ export function Layout({ children }: LayoutProps) {
               >
                 <FolderOpen className="w-4 h-4" />
                 <span>Projects</span>
+              </NavLink>
+              <NavLink 
+                to="/niches" 
+                active={location.pathname.startsWith('/niches')}
+              >
+                <Users className="w-4 h-4" />
+                <span>Niches</span>
               </NavLink>
             </nav>
           </div>
@@ -70,4 +77,3 @@ function NavLink({ to, active, children }: NavLinkProps) {
     </Link>
   )
 }
-

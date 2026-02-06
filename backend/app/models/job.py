@@ -14,6 +14,8 @@ class JobType(str, enum.Enum):
     THUMBNAIL = "thumbnail"
     EXPORT = "export"
     EXPORT_BATCH = "export_batch"
+    PUBLISH = "publish"
+    UPLOAD = "upload"
 
 
 class JobStatus(str, enum.Enum):

@@ -58,7 +58,7 @@ source venv/bin/activate
 pip install -q -r requirements.txt
 
 # Run backend in background
-python -m uvicorn app.main:app --reload --port 8000 &
+python -m uvicorn app.main:app --reload --reload-dir app --port 8000 &
 BACKEND_PID=$!
 
 # Wait a bit for backend to start
@@ -92,4 +92,3 @@ echo ""
 
 # Wait for both processes
 wait
-

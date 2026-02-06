@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Save, X, RotateCcw } from 'lucide-react'
-import type { Clip } from '../types'
+import { Save, X, RotateCcw, Music, Type, Volume2, VolumeX } from 'lucide-react'
+import type { Clip, TextOverlaySettings, AudioOverlaySettings } from '../types'
 import { VideoPlayer } from './VideoPlayer'
 import { Button } from './Button'
 import { Input } from './Input'
 import { formatTimestamp, formatDuration } from '../utils/format'
 import { getVideoUrl, updateClip } from '../api/client'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import clsx from 'clsx'
 
 interface ClipEditorProps {
   clip: Clip
   projectId: number
   projectDuration: number
   onClose: () => void
+  onPublish?: (clip: Clip, settings: { textOverlay?: TextOverlaySettings; audioOverlay?: AudioOverlaySettings }) => void
 }
 
 export function ClipEditor({
@@ -20,6 +22,7 @@ export function ClipEditor({
   projectId,
   projectDuration,
   onClose,
+  onPublish,
 }: ClipEditorProps) {
   const queryClient = useQueryClient()
   const videoUrl = getVideoUrl(projectId)
@@ -29,12 +32,30 @@ export function ClipEditor({
   const [endTime, setEndTime] = useState(clip.end_time)
   const [currentTime, setCurrentTime] = useState(clip.start_time)
 
+  // Overlay settings
+  const [showOverlaySettings, setShowOverlaySettings] = useState(false)
+  const [textOverlayEnabled, setTextOverlayEnabled] = useState(false)
+  const [textOverlayText, setTextOverlayText] = useState('')
+  const [textOverlayPosition, setTextOverlayPosition] = useState<'top' | 'center' | 'bottom'>('bottom')
+  const [textOverlayColor, setTextOverlayColor] = useState('#FFFFFF')
+  const [textOverlaySize, setTextOverlaySize] = useState(48)
+
+  const [audioOverlayEnabled, setAudioOverlayEnabled] = useState(false)
+  const [audioOverlayPath, setAudioOverlayPath] = useState('')
+  const [audioOverlayVolume, setAudioOverlayVolume] = useState(30)
+  const [originalAudioVolume, setOriginalAudioVolume] = useState(100)
+
   // Reset when clip changes
   useEffect(() => {
     setName(clip.name || '')
     setStartTime(clip.start_time)
     setEndTime(clip.end_time)
     setCurrentTime(clip.start_time)
+    // Reset overlay settings
+    setTextOverlayEnabled(false)
+    setTextOverlayText('')
+    setAudioOverlayEnabled(false)
+    setAudioOverlayPath('')
   }, [clip])
 
   const mutation = useMutation({
@@ -72,6 +93,31 @@ export function ClipEditor({
   const handleSetEnd = () => {
     if (currentTime > startTime) {
       setEndTime(currentTime)
+    }
+  }
+
+  const handlePublish = () => {
+    if (onPublish) {
+      const settings: { textOverlay?: TextOverlaySettings; audioOverlay?: AudioOverlaySettings } = {}
+      
+      if (textOverlayEnabled && textOverlayText) {
+        settings.textOverlay = {
+          text: textOverlayText,
+          position: textOverlayPosition,
+          color: textOverlayColor,
+          size: textOverlaySize,
+        }
+      }
+      
+      if (audioOverlayEnabled && audioOverlayPath) {
+        settings.audioOverlay = {
+          path: audioOverlayPath,
+          volume: audioOverlayVolume,
+          original_volume: originalAudioVolume,
+        }
+      }
+      
+      onPublish(clip, settings)
     }
   }
 
@@ -187,6 +233,163 @@ export function ClipEditor({
           )}
         </div>
 
+        {/* Overlay Settings Toggle */}
+        <div className="border-t border-clip-border pt-4">
+          <button
+            onClick={() => setShowOverlaySettings(!showOverlaySettings)}
+            className="w-full flex items-center justify-between p-3 bg-clip-elevated rounded-lg hover:bg-clip-elevated/80 transition-colors"
+          >
+            <span className="text-sm font-medium text-white flex items-center gap-2">
+              <Type className="w-4 h-4" />
+              Overlay Settings (for Publish)
+            </span>
+            <span className="text-xs text-gray-500">
+              {showOverlaySettings ? 'Hide' : 'Show'}
+            </span>
+          </button>
+        </div>
+
+        {/* Overlay Settings Content */}
+        {showOverlaySettings && (
+          <div className="space-y-4 p-4 bg-clip-elevated/50 rounded-lg">
+            {/* Text Overlay */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm font-medium text-white">
+                  <Type className="w-4 h-4" />
+                  Text Overlay
+                </label>
+                <button
+                  onClick={() => setTextOverlayEnabled(!textOverlayEnabled)}
+                  className={clsx(
+                    'w-10 h-5 rounded-full transition-colors',
+                    textOverlayEnabled ? 'bg-clip-accent' : 'bg-gray-600'
+                  )}
+                >
+                  <div className={clsx(
+                    'w-4 h-4 rounded-full bg-white transition-transform mx-0.5',
+                    textOverlayEnabled && 'translate-x-5'
+                  )} />
+                </button>
+              </div>
+
+              {textOverlayEnabled && (
+                <div className="space-y-3 pl-6">
+                  <Input
+                    label="Text"
+                    value={textOverlayText}
+                    onChange={(e) => setTextOverlayText(e.target.value)}
+                    placeholder="Enter overlay text..."
+                  />
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Position</label>
+                      <select
+                        value={textOverlayPosition}
+                        onChange={(e) => setTextOverlayPosition(e.target.value as 'top' | 'center' | 'bottom')}
+                        className="w-full px-2 py-1.5 bg-clip-bg border border-clip-border rounded text-sm text-white"
+                      >
+                        <option value="top">Top</option>
+                        <option value="center">Center</option>
+                        <option value="bottom">Bottom</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Color</label>
+                      <input
+                        type="color"
+                        value={textOverlayColor}
+                        onChange={(e) => setTextOverlayColor(e.target.value)}
+                        className="w-full h-8 rounded cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Size</label>
+                      <input
+                        type="number"
+                        value={textOverlaySize}
+                        onChange={(e) => setTextOverlaySize(parseInt(e.target.value))}
+                        min={12}
+                        max={200}
+                        className="w-full px-2 py-1.5 bg-clip-bg border border-clip-border rounded text-sm text-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Audio Overlay */}
+            <div className="space-y-3 border-t border-clip-border pt-4">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 text-sm font-medium text-white">
+                  <Music className="w-4 h-4" />
+                  Background Audio
+                </label>
+                <button
+                  onClick={() => setAudioOverlayEnabled(!audioOverlayEnabled)}
+                  className={clsx(
+                    'w-10 h-5 rounded-full transition-colors',
+                    audioOverlayEnabled ? 'bg-clip-accent' : 'bg-gray-600'
+                  )}
+                >
+                  <div className={clsx(
+                    'w-4 h-4 rounded-full bg-white transition-transform mx-0.5',
+                    audioOverlayEnabled && 'translate-x-5'
+                  )} />
+                </button>
+              </div>
+
+              {audioOverlayEnabled && (
+                <div className="space-y-3 pl-6">
+                  <Input
+                    label="Audio File Path"
+                    value={audioOverlayPath}
+                    onChange={(e) => setAudioOverlayPath(e.target.value)}
+                    placeholder="/path/to/audio.mp3"
+                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="flex items-center gap-2 text-xs text-gray-400 mb-1">
+                        <Music className="w-3 h-3" />
+                        Background Volume
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={audioOverlayVolume}
+                          onChange={(e) => setAudioOverlayVolume(parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <span className="text-xs text-gray-400 w-8">{audioOverlayVolume}%</span>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="flex items-center gap-2 text-xs text-gray-400 mb-1">
+                        <Volume2 className="w-3 h-3" />
+                        Original Audio
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={originalAudioVolume}
+                          onChange={(e) => setOriginalAudioVolume(parseInt(e.target.value))}
+                          className="flex-1"
+                        />
+                        <span className="text-xs text-gray-400 w-8">{originalAudioVolume}%</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
         <div className="flex items-center gap-3 pt-2">
           <Button
@@ -198,6 +401,14 @@ export function ClipEditor({
             Reset
           </Button>
           <div className="flex-1" />
+          {onPublish && (
+            <Button
+              variant="secondary"
+              onClick={handlePublish}
+            >
+              Publish...
+            </Button>
+          )}
           <Button
             variant="secondary"
             onClick={onClose}
@@ -224,4 +435,3 @@ export function ClipEditor({
     </div>
   )
 }
-

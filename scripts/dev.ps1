@@ -44,7 +44,7 @@ $activateScript = Join-Path $backendDir "venv\Scripts\Activate.ps1"
 pip install -q -r requirements.txt
 
 # Run backend in background
-$script:backend = Start-Process -FilePath python -ArgumentList "-m", "uvicorn", "app.main:app", "--reload", "--port", "8000" -WorkingDirectory $backendDir -PassThru
+$script:backend = Start-Process -FilePath python -ArgumentList "-m", "uvicorn", "app.main:app", "--reload", "--reload-dir", "app", "--port", "8000" -WorkingDirectory $backendDir -PassThru
 
 # Wait a bit for backend to start
 Start-Sleep -Seconds 2

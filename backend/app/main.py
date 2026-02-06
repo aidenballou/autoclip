@@ -16,6 +16,8 @@ from app.workers.handlers import (
     handle_thumbnail,
     handle_export,
     handle_export_batch,
+    handle_publish,
+    handle_upload,
 )
 
 # Configure logging
@@ -42,6 +44,8 @@ async def lifespan(app: FastAPI):
     job_runner.register_handler("thumbnail", handle_thumbnail)
     job_runner.register_handler("export", handle_export)
     job_runner.register_handler("export_batch", handle_export_batch)
+    job_runner.register_handler("publish", handle_publish)
+    job_runner.register_handler("upload", handle_upload)
     logger.info("Job handlers registered")
     
     yield
